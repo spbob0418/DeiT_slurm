@@ -1,14 +1,5 @@
-#SBATCH -J deit_fullprecision
-#SBATCH -o ./training_logs/%j.log_deit_fullprecision.txt
-#SBATCH -p A6000
-#SBATCH -t 72:00:00
-#SBATCH --gres=gpu:4
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --tasks-per-node=1
-#SBATCH --cpus-per-task=4
-
 export OMP_NUM_THREADS=1
+
 
 WANDB_API_KEY="51ecf17c20b4f4072bad7ef1312b7b7843ea6841" 
 export WANDB_API_KEY
