@@ -24,7 +24,7 @@ nohup python3 ./main_original.py \
 --epochs 300 \
 --weight-decay 0.05 \
 --batch-size 256 \
---data-path /data/ILSVRC2012 \
+--data-path /home/tsyeom/dataset/imagenet \
 --lr 5e-4 \
 --output_dir ${DIR}/${VERSION} \
 --distributed > ${DIR}/${VERSION}/output.log 2>&1 &
