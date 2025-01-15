@@ -26,7 +26,7 @@ from losses_original import DistillationLoss
 from samplers import RASampler
 from augment import new_data_aug_generator
 
-import quant_vision_transformer_fullprecision
+from z_finegrained_reproduce import quant_vision_transformer_finegrained_wg_fp_with_qk_layernorm_vertex_prefix
 
 import wandb
 import socket
@@ -35,8 +35,8 @@ import utils
 
 DIST_PORT=6006
 WANDB_LOG = True
-WANDB_PROJ_NAME = 'DeiT_fullprecision_300'
-# os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3'
+WANDB_PROJ_NAME = 'deit_base_finegrained_wgfp_qkl_vertex_register_token_rand_init'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3'
 os.environ['WORLD_SIZE'] = '4'
 
 def get_args_parser():
@@ -222,11 +222,25 @@ def main(args):
     dataset_val, _ = build_dataset(is_train=False, args=args)
     
     # wandb logging
-    wandb_log = WANDB_LOG 
+    
+    
+
     wandb_project = WANDB_PROJ_NAME
     wandb_run_name = args.model 
-    if wandb_log:
-        wandb.init(project=wandb_project, name=wandb_run_name, config=args)
+    ###scratch training version
+    if args.resume: 
+        if node_rank == 0:
+            wandb_log = True 
+            wandb.init(project=wandb_project, name=wandb_run_name, config=args, 
+                    resume="must",  # 기존 Run 이어서 진행
+                    id="xyqmngfw" 
+            )
+        else :
+            wandb_log = False
+    else : 
+        wandb_log = WANDB_LOG 
+        if wandb_log :
+            wandb.init(project=wandb_project, name=wandb_run_name, config=args)
 
     if args.distributed:
         num_tasks = utils.get_world_size()
@@ -459,9 +473,6 @@ def main(args):
         
         torch.cuda.empty_cache()
         dist.barrier()
-
-        if wandb_log:
-            wandb.log({"train/loss": v for k, v in train_stats.items()})
             
         lr_scheduler.step(epoch)
         if args.output_dir:
@@ -477,9 +488,12 @@ def main(args):
                     'args': args,
                 }, checkpoint_path)
              
-        test_stats = evaluate(data_loader_val, model, device)
+        test_stats = evaluate(data_loader_val, model, device, wandb_log)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
         
+        if wandb_log:
+            wandb.log({"train_loss/epoch": v for k, v in train_stats.items()})
+
         if max_accuracy < test_stats["acc1"]:
             max_accuracy = test_stats["acc1"]
             if args.output_dir:

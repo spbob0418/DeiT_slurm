@@ -85,9 +85,9 @@ def build_transform(is_train, args):
             color_jitter=args.color_jitter,
             auto_augment=args.aa,
             interpolation=args.train_interpolation,
-            re_prob=args.reprob,
-            re_mode=args.remode,
-            re_count=args.recount,
+            re_prob=args.reprob,  #0.25
+            re_mode=args.remode,  #pixel
+            re_count=args.recount,  #int
         )
         if not resize_im:
             # replace RandomResizedCropAndInterpolation with

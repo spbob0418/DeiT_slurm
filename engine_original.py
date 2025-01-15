@@ -21,7 +21,9 @@ from probe import probe
 import re
 import numpy as np
 import os
-
+from optimizer_probe import compute_adamw_update
+import pandas as pd
+import torch.nn.functional as F
 
 
 def train_one_epoch(wandb_log, device_id, model: torch.nn.Module, criterion: DistillationLoss,
@@ -33,11 +35,12 @@ def train_one_epoch(wandb_log, device_id, model: torch.nn.Module, criterion: Dis
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     header = 'Epoch: [{}]'.format(epoch)
-    print_freq = 10
     
+    ##로그 frequency
+    print_freq = 10
+
     if args.cosub:
         criterion = torch.nn.BCEWithLogitsLoss()
-    
     
     for iteration, (samples, targets) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         samples = samples.to(device, non_blocking=True)
@@ -56,7 +59,14 @@ def train_one_epoch(wandb_log, device_id, model: torch.nn.Module, criterion: Dis
             outputs = model(samples, epoch, iteration, device_id)
             dist.barrier()
             if not args.cosub:
-                loss = criterion(samples, outputs, targets)
+                
+                # loss = criterion(samples, outputs, targets)
+                loss = criterion(
+                        samples.to(dtype=torch.float32), 
+                        outputs.to(dtype=torch.float32), 
+                        targets.to(dtype=torch.float32)
+                    )
+                
             else:
                 outputs = torch.split(outputs, outputs.shape[0]//2, dim=0)
                 loss = 0.25 * criterion(outputs[0], targets) 
@@ -65,8 +75,6 @@ def train_one_epoch(wandb_log, device_id, model: torch.nn.Module, criterion: Dis
                 loss = loss + 0.25 * criterion(outputs[1], outputs[0].detach().sigmoid()) 
             dist.barrier()
         ######
-
-
 
         loss_value = loss.item()
 
@@ -78,80 +86,66 @@ def train_one_epoch(wandb_log, device_id, model: torch.nn.Module, criterion: Dis
 
         # this attribute is added by timm on one optimizer (adahessian)
         is_second_order = hasattr(optimizer, 'is_second_order') and optimizer.is_second_order
+        
+        # if (device_id == 0) and (iteration % 10 == 0):
+        #     print("loss scaler scale factor: ", loss_scaler._scaler.get_scale())
         loss_scaler(loss, optimizer, clip_grad=max_norm,
                     parameters=model.parameters(), create_graph=is_second_order)
+        torch.cuda.empty_cache()
+
+
         ########################################
 
         # if device_id == 0:
         #     for name, param in model.named_parameters():
         #         print(name, id(name))
         # exit()
-        # if device_id == 0:
+        # if device_id == 0: 
         #     for name, param in model.named_parameters():
         #         if not param.requires_grad:  # requires_grad가 False인 파라미터만 출력
         #             print(name, id(name))
         # exit()
         
-        
-        # TODO:###optimizer state 출력 코드
-        csv_file = "optimizer_state_.csv"
-
-        # Device ID가 0일 때만 실행
-        if (device_id == 0) and (iteration%10 ==0):
-            if not os.path.exists(csv_file):
-                with open(csv_file, mode="a", newline='') as file:
-                    writer = csv.writer(file)
-                    # 헤더 작성
-                    if os.path.getsize(csv_file) == 0:
-                        writer.writerow(["epoch", "iteration", "top1", "top_5_mean","mean_value"])
-
-            # 에포크별 데이터 기록
+        if (device_id == 0) and (iteration % 10000 == 0):
+            os.makedirs("./optimizer_state_report_", exist_ok=True)
             state_dict = optimizer.state_dict()
-            target_ids = [102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151]
+            # print(state_dict)
+            # exit()
+            #which has weight decay term 
+            target_ids = [102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 
+                        122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 
+                        142, 143, 144, 145, 146, 147, 148, 149, 150, 151]
 
-            # 에포크가 반복될 때마다 데이터 추가
-            with open(csv_file, mode="a", newline='') as file:
-                epsilon = torch.finfo(torch.float32).eps 
-                writer = csv.writer(file)
-                values = []
-                for param_id in target_ids:
-                    if param_id in state_dict['state']:
-                        state = state_dict['state'][param_id]
-                        
-                        # exp_avg와 exp_avg_sq 값을 읽고 계산 수행
-                        if 'exp_avg' in state and 'exp_avg_sq' in state:
-                            exp_avg = state['exp_avg'].abs().mean().item()
-                            exp_avg_sq = state['exp_avg_sq'].abs().mean().item()
-                            
-                            # exp_avg / (sqrt(exp_avg_sq) + epsilon) 계산
-                            if exp_avg_sq + epsilon != 0:  # 안전하게 분모 확인
-                                ratio = exp_avg / (math.sqrt(exp_avg_sq) + epsilon)
-                                values.append(ratio)
-                
-                # 값이 있는 경우 정렬 후 Top-1, Top-5, 평균 계산
-                if values:
-                    values.sort(reverse=True)  # 내림차순 정렬
-                    top_1 = values[0]  # Top-1 값
-                    top_5 = values[:5] if len(values) >= 5 else values  # Top-5 값
-                    mean_value = sum(values) / len(values)  # Mean 값
-                    
-                    # 기록할 값을 계산
-                    top_5_mean = sum(top_5) / len(top_5) if top_5 else None  # Top-5의 평균
-                    
-                    # writer를 통해 csv에 기록
-                    writer.writerow([epoch, iteration, top_1, top_5_mean, mean_value])
-                else:
-                    # 값이 없는 경우 None으로 기록
-                    writer.writerow([epoch, iteration, None, None, None])
+            for param_id in target_ids:
+                csv_file = f"./optimizer_state_report_/{param_id}.csv"
 
-        # TODO: params.grad 출력 코드 
-        if (device_id == 0) and (iteration%200 ==0):
+                # 파일이 비어 있을 경우 헤더 작성
+                if not os.path.exists(csv_file) or os.path.getsize(csv_file) == 0:
+                    with open(csv_file, mode="a", newline='') as file:
+                        writer = csv.writer(file)
+                        writer.writerow(["epoch", "iteration", "exp_avg", "exp_avg_sq", "adamw_update"])
+
+                # 파라미터가 state_dict에 있는 경우
+                if param_id in state_dict['state']:
+                    state = state_dict['state'][param_id]
+                    if 'exp_avg' in state and 'exp_avg_sq' in state:
+                        exp_avg = state['exp_avg']
+                        exp_avg_sq = state['exp_avg_sq']
+                        step = state['step'].item()
+                        adamw_update = compute_adamw_update(exp_avg, exp_avg_sq, step, optimizer.param_groups[1]["lr"],
+                                                            optimizer.param_groups[1]["betas"], optimizer.param_groups[1]["eps"])
+                        exp_avg = exp_avg.abs().mean().item()
+                        exp_avg_sq = exp_avg_sq.abs().mean().item()
+                        with open(csv_file, mode="a", newline='') as file:
+                            writer = csv.writer(file)
+                            writer.writerow([epoch, iteration, exp_avg, exp_avg_sq, adamw_update])
+
+        # # TODO: params.grad 출력 코드 
+        if (device_id == 0) and (iteration % 10000 ==0):
             for name, param in model.named_parameters():
-                if param.grad is not None:  # Check if the parameter has a gradient
-                    # Check if the parameter belongs to a block's weight or head's weight
+                if param.grad is not None:  #
                     if ("blocks" in name and "weight" in name):
-                        if 'norm1' not in name and 'norm2' not in name:
-                            # Extract block number and the rest of the string
+                        if 'norm1' not in name and 'norm2' not in name and 'q_norm' not in name and 'k_norm' not in name:
                             match_block = re.search(r"modules_list\.(\d+)\.(.*)", name)
                             if match_block:
                                 block_number = int(match_block.group(1))
@@ -159,8 +153,15 @@ def train_one_epoch(wandb_log, device_id, model: torch.nn.Module, criterion: Dis
                                 probe(param.grad, block_number, layer_string, epoch, iteration)
 
                     elif ("head.weight" in name): 
-                        probe(param.grad, 100, 'head', epoch, iteration)
-                        # analyze_and_save_grad(param.grad, 100, 'head', epoch, iteration)
+                        # grad_array = param.grad.cpu().numpy()  
+                        # filename = f"gradients_head_epoch{epoch}_iter{iteration}.npy"
+                        # directory = "gradients_for_plot"  
+                        # if not os.path.exists(directory):  
+                        #     os.makedirs(directory)
+                        # filename = os.path.join(directory, f"gradients_head_epoch{epoch}_iter{iteration}.npy")
+                        # np.save(filename, grad_array)
+                        # print(f"Saved gradient to {filename}")
+                        probe(param.grad, 11111, 'head', epoch, iteration)
 
         torch.cuda.synchronize()
         if model_ema is not None:
@@ -176,12 +177,13 @@ def train_one_epoch(wandb_log, device_id, model: torch.nn.Module, criterion: Dis
             })
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
-    print("Averaged stats:", metric_logger)
+    if device_id == 0: 
+        print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
 @torch.no_grad()
-def evaluate(data_loader, model, device):
+def evaluate(data_loader, model, device, wandb_log):
     criterion = torch.nn.CrossEntropyLoss()
 
     metric_logger = utils.MetricLogger(delimiter="  ")
@@ -209,6 +211,9 @@ def evaluate(data_loader, model, device):
     metric_logger.synchronize_between_processes()
     print('* Acc@1 {top1.global_avg:.3f} Acc@5 {top5.global_avg:.3f} loss {losses.global_avg:.3f}'
           .format(top1=metric_logger.acc1, top5=metric_logger.acc5, losses=metric_logger.loss))
+    if wandb_log:
+        wandb.log({"Acc@1": metric_logger.acc1.global_avg})  # global_avg 값 사용
+        wandb.log({"Acc@5": metric_logger.acc5.global_avg})  # global_avg 값 사용
+        wandb.log({"val_loss/epoch": metric_logger.loss.global_avg})
 
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
-

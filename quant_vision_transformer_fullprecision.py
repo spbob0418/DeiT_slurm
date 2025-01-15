@@ -13,7 +13,7 @@ from timm.models.registry import register_model
 import numpy as np
 from probe import probe
 import pandas as pd
-
+import os
 _logger = logging.getLogger(__name__)
 __all__ = ['qt_deit_small_patch16_224']
 
@@ -21,7 +21,6 @@ def round_pass(x):
     y = x.round()
     y_grad = x
     return y.detach() - y_grad.detach() + y_grad
-
 
 class Quantizer():
     def __init__(self, N_bits: int, type: str = "per_tensor", signed: bool = True, symmetric: bool = True):
@@ -31,7 +30,6 @@ class Quantizer():
         self.symmetric = symmetric
         self.q_type = type
         self.minimum_range = 1e-6
-        
         
         if self.N_bits is None:
             return 
@@ -52,15 +50,16 @@ class Quantizer():
             return x, 1
         if self.symmetric:
             if self.q_type == 'per_tensor': 
-                max_x = x.abs().max().detach()
+                max_x = x.abs().max()
             elif self.q_type == 'per_token': 
-                max_x = x.abs().amax(dim=-1, keepdim=True).detach()
+                max_x = x.abs().amax(dim=-1, keepdim=True)
             elif self.q_type == 'per_channel': 
-                max_x = x.abs().amax(dim=0, keepdim=True).detach()
-            max_x = max_x.detach().clamp_(self.minimum_range)
+                max_x = x.abs().amax(dim=0, keepdim=True)
+            max_x = max_x.clamp_(self.minimum_range)
             scale = max_x / self.Qp
             x = x / scale 
             x = round_pass(x)
+            # x = torch.round(x)
             
         else: #Asymmetric
             if self.q_type == 'per_tensor': 
@@ -119,11 +118,15 @@ class _quantize_global(torch.autograd.Function):
         ctx.has_bias = bias is not None
         ctx.epoch = epoch
         ctx.device_id=device_id
+        if device_id == 0 and iteration is not None:
+            if iteration % 10 == 0 and layer_info is not None:
+                probe(w, block_num=block_num, layer=layer_info + 'weight', epoch=epoch, iteration=iteration)
+
         
         x = x.view(-1, x.size(-1)) #reshape to 2D
         input_quant, s_input_quant = a_qmodule(x)
         weight_quant, s_weight_quant = w_qmodule(w)
-        ctx.input = (x, s_input_quant, w, s_weight_quant)
+        ctx.input = (input_quant, s_input_quant, weight_quant, s_weight_quant)
         
         output = torch.matmul(input_quant, weight_quant.t())
 
@@ -137,9 +140,11 @@ class _quantize_global(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, g_3D):
+        #################################
         if ctx.device_id == 0 and ctx.iteration is not None:
-            if ctx.iteration % 400 == 0 and ctx.layer_info is not None:
+            if ctx.iteration % 10 == 0 and ctx.layer_info is not None:
                 probe(g_3D, block_num=ctx.block_num, layer=ctx.layer_info + 'X_grad_before', epoch=ctx.epoch, iteration=ctx.iteration)
+
         
         g_2D = g_3D.reshape(-1, g_3D.size(-1)) #reshape to 2D
         grad_X = grad_W = grad_bias = None 
@@ -150,55 +155,68 @@ class _quantize_global(torch.autograd.Function):
         q_x = q_x.half() 
         q_w = q_w.half()
 
-        if ctx.device_id == 0 and ctx.iteration is not None:
-            if ctx.iteration % 400 == 0 and ctx.layer_info is not None:
-                probe(q_w, block_num=ctx.block_num, layer=ctx.layer_info + 'weight', epoch=ctx.epoch, iteration=ctx.iteration)
-
 
         w_g_qmodule, a_g_qmodule = ctx.g_qmodule
         reshape_3D = ctx.reshape_3D_size
         a_g_2D_quant, a_s_g_2D_quant = a_g_qmodule(g_2D)
         
         ##기록
-        
-        # if ctx.device_id == 0 and ctx.iteration%200 ==0:
-        #     a_g_3D_quant = a_g_2D_quant.view(reshape_3D[0],reshape_3D[1],-1)
-        #     # g_3D_file_name = f'reproduce/probe_report_pertensor_test/gradient_mask_test/g_3D_{ctx.layer_info}.pt'
-        #     # a_g_2D_quant_file_name = f'reproduce/probe_report_pertensor_test/gradient_mask_test/quant_g_2D_{ctx.layer_info}.pt'
-        #     # torch.save(g_3D[0], g_3D_file_name)
-        #     # torch.save(a_g_3D_quant[0], a_g_2D_quant_file_name)
-        #     g_3D_2D = g_3D[0].cpu().numpy()
-        #     a_g_3D_quant_2D = a_g_3D_quant[0].cpu().numpy()
+        # if ctx.device_id == 0 and ctx.iteration 10 ==0 :
+            # a_g_3D_quant = a_g_2D_quant.view(reshape_3D[0],reshape_3D[1],-1)
+            # # g_3D_file_name = f'reproduce/probe_report_pertensor_test/gradient_mask_test/g_3D_{ctx.layer_info}.pt'
+            # # a_g_2D_quant_file_name = f'reproduce/probe_report_pertensor_test/gradient_mask_test/quant_g_2D_{ctx.layer_info}.pt'
+            # # torch.save(g_3D[0], g_3D_file_name)
+            # # torch.save(a_g_3D_quant[0], a_g_2D_quant_file_name)
+            # g_3D_2D = g_3D[0].cpu().numpy()
+            # a_g_3D_quant_2D = a_g_3D_quant[0].cpu().numpy()
             
-        #     g_3D_csv_file = f'/home/shkim/QT_DeiT_small/reproduce/probe_report_fullprecision/gradient_mask/g_3D_{ctx.layer_info}_iter{ctx.iteration}.csv'
-        #     a_g_2D_quant_csv_file = f'/home/shkim/QT_DeiT_small/reproduce/probe_report_fullprecision/gradient_mask/quant_g_2D_{ctx.layer_info}_iter{ctx.iteration}.csv'
+            # g_3D_csv_file = f'/home/shkim/QT_DeiT_small/reproduce/pertensor_4/g_3D_{ctx.layer_info}_epoch{ctx.epoch}_iter{ctx.iteration}.csv'
+            # a_g_2D_quant_csv_file = f'/home/shkim/QT_DeiT_small/reproduce/pertensor_4/quant_g_2D_{ctx.layer_info}_epoch{ctx.epoch}_iter{ctx.iteration}.csv'
 
-        #     # 데이터프레임 변환 후 CSV 파일에 저장 (새 파일 생성)
-        #     pd.DataFrame(g_3D_2D).to_csv(g_3D_csv_file, index=False, header=False)
-        #     pd.DataFrame(a_g_3D_quant_2D).to_csv(a_g_2D_quant_csv_file, index=False, header=False)
+            # # 데이터프레임 변환 후 CSV 파일에 저장 (새 파일 생성)
+            # pd.DataFrame(g_3D_2D).to_csv(g_3D_csv_file, index=False, header=False)
+            # pd.DataFrame(a_g_3D_quant_2D).to_csv(a_g_2D_quant_csv_file, index=False, header=False)
 
+        # weight 기록 
+        # if ctx.device_id == 0 and ctx.iteration 10 ==0 and ctx.block_num ==11 :
+        #     weight_array = q_w.cpu().numpy()  # Move to CPU and convert to numpy
+        #     # Define a filename using epoch and iteration
+        #     filename = f"weights_epoch{ctx.epoch}_iter{ctx.iteration}_{ctx.layer_info}.npy"
+            
+        #     directory = "weights_for_plot"  # Directory to save the gradients
+        #     if not os.path.exists(directory):  # Create directory if it doesn't exist
+        #         os.makedirs(directory)
+            
+        #     # Define a filename using epoch and iteration
+        #     filename = os.path.join(directory, f"weights_head_epoch{ctx.epoch}_iter{ctx.iteration}_{ctx.layer_info}.npy")
+            
+        #     # Save the numpy array to a file
+        #     np.save(filename, weight_array)
 
-
+        #     print(f"Saved gradient to {filename}")
+        # ################################################
 
         grad_X = torch.matmul(a_g_2D_quant, q_w)
         grad_X = grad_X * a_s_g_2D_quant * s_w 
-        grad_X = grad_X.view(reshape_3D[0],reshape_3D[1],-1)
+        
+        if ctx.layer_info != 'Head':
+            grad_X = grad_X.view(reshape_3D[0],reshape_3D[1],-1)
         
         w_g_2D_quant, w_s_g_2D_quant = w_g_qmodule(g_2D)
         grad_W = torch.matmul(w_g_2D_quant.t(), q_x)
         grad_W = grad_W * w_s_g_2D_quant * s_x
-
 
         if ctx.has_bias:
             grad_bias = g_2D.sum(dim=0)
         else:
             grad_bias = None
         
+        ############################
         if ctx.device_id == 0 and ctx.iteration is not None:
-            if ctx.iteration % 400 == 0 and ctx.layer_info is not None:
+            if ctx.iteration % 10 == 0 and ctx.layer_info is not None:
                 probe(grad_X, block_num=ctx.block_num, layer=ctx.layer_info + 'X_grad_after', epoch=ctx.epoch, iteration=ctx.iteration)
                 probe(grad_W, block_num=ctx.block_num, layer=ctx.layer_info + 'W_grad_after', epoch=ctx.epoch, iteration=ctx.iteration)
-            
+    
         return None, None, None, None, None, grad_X, grad_W, grad_bias, None, None, None, None
 
 class Mlp(nn.Module):
@@ -236,25 +254,27 @@ class Mlp(nn.Module):
                                 )
 
     def forward(self, x, epoch, iteration, device_id):
+        #################################
         if device_id == 0 and iteration is not None:
-            if iteration % 400 == 0:
+            if iteration % 10 == 0:
                 probe(x, block_num=self.block_num, layer='Input_MLP(fc1)', epoch=epoch, iteration=iteration)
 
         x = self.fc1(x, self.block_num, epoch, iteration, device_id, layer_info = 'During_MLP(fc1)')
         if device_id == 0 and iteration is not None:
-            if iteration % 400 == 0:
+            if iteration % 10 == 0:
                 probe(x, block_num=self.block_num, layer='Output_MLP(fc1)', epoch=epoch, iteration=iteration)
             
         x = self.act(x)
 
+        #################################
         if device_id == 0 and iteration is not None:
-            if iteration % 400 == 0:
+            if iteration % 10 == 0:
                 probe(x, block_num=self.block_num, layer='Input_MLP(fc2)', epoch=epoch, iteration=iteration)
 
         x = self.fc2(x, self.block_num, epoch, iteration, device_id, layer_info = 'During_MLP(fc2)')
-        #########TODO: Probe ################ second layer LLM 기준으로는 여기서 outlier 안나옴 
+
         if device_id == 0 and iteration is not None:
-            if iteration % 400 == 0:
+            if iteration % 10 == 0:
                 probe(x, block_num=self.block_num, layer='Output_MLP(fc2)', epoch=epoch, iteration=iteration)
         return x
 
@@ -298,7 +318,7 @@ class Attention(nn.Module):
 
     def forward(self, x, epoch, iteration, device_id):
         B, N, C = x.shape
-        x = self.qkv(x, self.block_num, epoch, iteration, device_id, layer_info = None) #quantized input, fp output
+        x = self.qkv(x, self.block_num, epoch, iteration, device_id, layer_info = 'qkv') #quantized input, fp output
         qkv = x.reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)  # (BN33)
         q, k, v = qkv.unbind(0) 
         
@@ -307,8 +327,9 @@ class Attention(nn.Module):
         attn = attn.softmax(dim=-1)
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         if device_id == 0 and iteration is not None:
-            if iteration % 400 == 0:
+            if iteration % 10 == 0:
                 probe(x, block_num=self.block_num, layer='Attention_Logit', epoch=epoch, iteration=iteration)
+
        
 
         # x, act_scaling_factor = self.qact2(x)
@@ -351,15 +372,17 @@ class Q_Block(nn.Module):
         x = self.attn(x, epoch, iteration, device_id)
         ##########TODO: Probe #############after attention projection
         if device_id == 0 and iteration is not None:
-            if iteration % 400 == 0:
+            if iteration % 10 == 0:
                 probe(x, block_num=self.block_num, layer='Attention_proj', epoch=epoch, iteration=iteration)
+
         x = residual_1 + x
         residual_2 = x 
         x = self.norm2(x)
         x = self.mlp(x, epoch, iteration, device_id) 
         x = residual_2 + x
+        ########################################
         if device_id == 0 and iteration is not None:
-            if iteration % 400 == 0:
+            if iteration % 10 == 0:
                 probe(x, block_num=self.block_num, layer='Hidden_State', epoch=epoch, iteration=iteration)
         return x
 
@@ -391,6 +414,16 @@ class lowbit_VisionTransformer(VisionTransformer):
             Q_Block(abits, wbits, w_gbits, a_gbits, block_num=i, dim=embed_dim,
                     num_heads=num_heads, mlp_ratio=mlp_ratio)
             for i in range(depth)])
+
+        self.head = Quantized_Linear(
+                        weight_quantize_module=Quantizer(None, 'per_tensor'), 
+                        act_quantize_module=Quantizer(None, 'per_tensor'), 
+                        weight_grad_quantize_module=Quantizer(None, 'per_tensor'),
+                        act_grad_quantize_module=Quantizer(None, 'per_tensor'),
+                        in_features=embed_dim, 
+                        out_features=1000, 
+                        bias=True
+                        )
         
     def forward_features(self, x, epoch, iteration, device_id):
         B = x.shape[0]
@@ -406,8 +439,8 @@ class lowbit_VisionTransformer(VisionTransformer):
 
     def forward(self, x, epoch=None, iteration=None, device_id=None):
         x = self.forward_features(x, epoch, iteration, device_id)
-        x = self.head(x)
-
+        x = self.head(x, 100, epoch, iteration, device_id, layer_info='Head')
+    
         return x
 
 @register_model
@@ -426,21 +459,21 @@ def deit_small_patch16_224(pretrained=False, **kwargs):
     return model
 
     
-##################
+#################
 
-@register_model
-def fourbits_deit_small_patch16_224(pretrained=False, **kwargs):
-    model = lowbit_VisionTransformer(
-        abits = 4, wbits = 4, w_gbits = 4, a_gbits = 4,
-        patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
-        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
-    model.default_cfg = _cfg()
-    if pretrained:
-        torch.hub.load_state_dict_from_url(
-            url='https://dl.fbaipublicfiles.com/deit/deit_small_distilled_patch16_224-649709d9.pth',
-            map_location="cpu", check_hash=True
-        )
-    return model
+# @register_model
+# def fourbits_deit_small_patch16_224(pretrained=False, **kwargs):
+#     model = lowbit_VisionTransformer(
+#         abits = 4, wbits = 4, w_gbits = 4, a_gbits = 4,
+#         patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
+#         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+#     model.default_cfg = _cfg()
+#     if pretrained:
+#         torch.hub.load_state_dict_from_url(
+#             url='https://dl.fbaipublicfiles.com/deit/deit_small_distilled_patch16_224-649709d9.pth',
+#             map_location="cpu", check_hash=True
+#         )
+#     return model
 
 
 
