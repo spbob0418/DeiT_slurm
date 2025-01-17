@@ -592,6 +592,7 @@ def fourbits_deit_small_patch16_224(pretrained=False, **kwargs):
 
 
 
+
 @register_model
 def threebits_deit_small_patch16_224(pretrained=False, **kwargs):
     model = lowbit_VisionTransformer(
@@ -638,7 +639,7 @@ def deit_base_patch16_224(pretrained=False, **kwargs):
 @register_model
 def fourbits_deit_base_patch16_224(pretrained=False, **kwargs):
     model = lowbit_VisionTransformer(
-        abits = None, wbits = None, w_gbits = None, a_gbits = None,
+        abits = 4, wbits = 4, w_gbits = 4, a_gbits = 4,
         patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     model.default_cfg = _cfg()

@@ -478,12 +478,12 @@ class lowbit_VisionTransformer(VisionTransformer):
         # self.reg_token = nn.Parameter(torch.randn(1, self.prefix_token_num, embed_dim))
 
         ####################White Patch Prefix#########################
-        # prefix_token_np = np.load("/home/shkim/QT_DeiT_small/reproduce/zz_prefix_patch_token_for_initialization/white_patch_token.npy")
-        # prefix_token_tensor = torch.tensor(prefix_token_np, dtype=torch.float32)
-        # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        # prefix_token_tensor = prefix_token_tensor.to(device)
+        prefix_token_np = np.load("/home/tsyeom/deit/zz_prefix_patch_token_for_initialization/white_patch_token.npy")
+        prefix_token_tensor = torch.tensor(prefix_token_np, dtype=torch.float32)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        prefix_token_tensor = prefix_token_tensor.to(device)
         # # Initialize self.reg_token with the loaded prefix_token values
-        # self.reg_token = nn.Parameter(prefix_token_tensor.clone()) #(1, 5, 384)
+        self.reg_token = nn.Parameter(prefix_token_tensor.clone()) #(1, 5, 384)
         ###################################################################
         
         
@@ -496,7 +496,7 @@ class lowbit_VisionTransformer(VisionTransformer):
         cls_tokens = self.cls_token.expand(B, -1, -1) 
 
         #########
-        prefix_mode = 'one'
+        prefix_mode = 'register'
         calibration = ''
 
         if prefix_mode in ['zero', 'one', 'random', 'background_patch', 'high-frequency']: 
@@ -505,14 +505,14 @@ class lowbit_VisionTransformer(VisionTransformer):
             prefix_token = prefix_token[:, :self.prefix_token_num, :]# 256, 5, 384
             
             ###########토큰 저장소##########
-            # if device_id == 0 :
-            #     prefix_token_np = prefix_token.cpu().detach().numpy()
-            #     # Define the filename for saving the .npy file
-            #     filename = "/home/shkim/QT_DeiT_small/reproduce/zz_prefix_patch_token_for_initialization/median_background_patch_token.npy"
-            #     # Save the NumPy array to an .npy file
-            #     np.save(filename, prefix_token_np)
-            #     print(f"Prefix token saved as {filename}")
-            #     exit()
+            if device_id == 0 :
+                prefix_token_np = prefix_token.cpu().detach().numpy()
+                # Define the filename for saving the .npy file
+                filename = "/home/shkim/QT_DeiT_small/reproduce/zz_prefix_patch_token_for_initialization/white_background_patch_token_base.npy"
+                # Save the NumPy array to an .npy file
+                np.save(filename, prefix_token_np)
+                print(f"Prefix token saved as {filename}")
+                exit()
             #########################################
         
         else : 
@@ -521,12 +521,10 @@ class lowbit_VisionTransformer(VisionTransformer):
         
         #########
         #positional embed for image patch 
+        x = torch.cat((cls_tokens, prefix_token, x), dim=1)
         x = x + self.pos_embed
         
         #positional embed for prefix token (vertex)
-        
-        x = torch.cat((cls_tokens, prefix_token, x), dim=1)
-        
         
         x = self.pos_drop(x) #256, 197, 384
         x = self.blocks(x, epoch, iteration, device_id, self.prefix_token_num)
@@ -565,6 +563,20 @@ class lowbit_VisionTransformer(VisionTransformer):
 
     
 ##################
+@register_model
+def deit_base_patch16_224(pretrained=False, **kwargs):
+    model = lowbit_VisionTransformer(
+        abits = None, wbits = None, w_gbits = None, a_gbits = None,
+        patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    model.default_cfg = _cfg()
+    if pretrained:
+        checkpoint = torch.hub.load_state_dict_from_url(
+            url="https://dl.fbaipublicfiles.com/deit/deit_base_patch16_224-b5f2ef4d.pth",
+            map_location="cpu", check_hash=True
+        )
+        model.load_state_dict(checkpoint["model"])
+    return model
 
 @register_model
 def fourbits_deit_small_patch16_224(pretrained=False, **kwargs):

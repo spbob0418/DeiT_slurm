@@ -26,16 +26,16 @@ from losses_original import DistillationLoss
 from samplers import RASampler
 from augment import new_data_aug_generator
 
-from z_finegrained_reproduce import quant_vision_transformer_finegrained_wg_fp_with_qk_layernorm_vertex_prefix
+from z_finegrained_reproduce import quant_vision_transformer_finegrained_wg_fp_with_qk_layernorm
 
 import wandb
 import socket
 import os
 import utils
 
-DIST_PORT=6006
+DIST_PORT=7777
 WANDB_LOG = True
-WANDB_PROJ_NAME = 'deit_base_finegrained_wgfp_qkl_vertex_register_token_rand_init'
+WANDB_PROJ_NAME = os.environ.get("VERSION")
 os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3'
 os.environ['WORLD_SIZE'] = '4'
 
